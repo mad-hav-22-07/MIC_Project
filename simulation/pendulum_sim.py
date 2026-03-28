@@ -78,6 +78,17 @@ PHASE_READY   = "READY"
 PHASE_SWINGUP = "SWING-UP"
 PHASE_RACE    = "RACE"
 
+# ── Air resistance ───────────────────────────────────────────────────────────
+# Linear drag on the pendulum rod/bob from motion through air.
+# Integrated along the uniform rod; gives both a translational drag term
+# (from cart velocity through still air) and a rotational drag term
+# (from the rod sweeping through air):
+#   tau_air = -PEND_AIR * [ xd*(L²/2)*cos(θ)  +  thd*(L³/3) ]
+# The cart-induced term (xd part) is the "reaction force from cart acceleration"
+# effect: when the cart brakes or accelerates, the pendulum sees an apparent wind
+# that creates an extra restoring/destabilising torque.
+PEND_AIR       = 0.06          # N·s/m² — air drag coefficient along rod
+
 # ── Display constants ────────────────────────────────────────────────────────
 SCREEN_W, SCREEN_H  = 1280, 680
 TRACK_Y             = 470         # screen y of track surface
@@ -115,20 +126,35 @@ def equations_of_motion(state, F_cart, tau_motor):
     Returns
     -------
     state_dot : [x_dot, x_ddot, theta_dot, theta_ddot]
+
+    Physics notes
+    -------------
+    • Cart ↔ pendulum coupling is handled by the off-diagonal mass-matrix term
+      M12 = (mL/2)cosθ.  When the cart accelerates (large f1), the pendulum
+      sees  θ̈ += -M12*f1/det  — i.e. a backward inertial tilt.  This is the
+      "reaction force from cart acceleration" on the pendulum.
+
+    • Air drag on the uniform rod is integrated analytically:
+        τ_air = -PEND_AIR * [ ẋ·(L²/2)·cosθ  +  θ̇·(L³/3) ]
+      The first term couples cart speed to pendulum (apparent headwind/tailwind).
+      The second term is rotational drag that supplements PEND_FRIC.
     """
     _, xd, th, thd = state
     M, m, L, g = CART_MASS, PEND_MASS, PEND_LEN, GRAVITY
 
     s, c = np.sin(th), np.cos(th)
 
-    # Mass matrix entries
+    # Mass matrix
     M11 = M + m
     M12 = (m * L / 2.0) * c
     M22 = I_HINGE
 
-    # Right-hand side
-    f1 = F_cart - CART_FRIC * xd + (m * L / 2.0) * thd ** 2 * s
-    f2 = (m * g * L / 2.0) * s - PEND_FRIC * thd + tau_motor
+    # Air drag torque on pendulum (integrated along uniform rod)
+    tau_air = -PEND_AIR * (xd * (L**2 / 2.0) * c + thd * (L**3 / 3.0))
+
+    # Generalised forces
+    f1 = F_cart - CART_FRIC * xd + (m * L / 2.0) * thd**2 * s
+    f2 = (m * g * L / 2.0) * s - PEND_FRIC * thd + tau_motor + tau_air
 
     det = M11 * M22 - M12 * M12
 
@@ -340,13 +366,27 @@ def _draw_hud(screen, font_m, font_s, state, imu, omega_motor, pwm_pct, mode, fa
         screen.blit(font_m.render(txt, True, col), (18, 18 + i * 26))
 
     # ── Controls legend (bottom-right) ───────────────────────────────────────
-    ctrl = ["← / → : Drive cart  (wheel motors)",
+    ctrl = ["SPACE  : Start race",
+            "← / → : Drive cart",
             "P      : Toggle LQR / PID",
-            "R      : Reset",
-            "Q / Esc: Quit"]
+            "R      : Reset  |  Q: Quit"]
     for i, txt in enumerate(ctrl):
         screen.blit(font_s.render(txt, True, (110, 115, 135)),
-                    (SCREEN_W - 290, SCREEN_H - 115 + i * 26))
+                    (SCREEN_W - 270, SCREEN_H - 115 + i * 26))
+
+    # ── Phase status bar (top-centre) ─────────────────────────────────────────
+    if phase != PHASE_RACE:
+        hints = {
+            PHASE_READY:   "Pendulum horizontal — press SPACE to start swing-up",
+            PHASE_SWINGUP: "Swing-up in progress — cart locked until upright",
+        }
+        hint_txt = hints.get(phase, "")
+        surf     = font_s.render(f"  {hint_txt}  ", True, ph_col)
+        bg       = pygame.Surface((surf.get_width() + 4, surf.get_height() + 4))
+        bg.fill((28, 32, 42))
+        bx = SCREEN_W // 2 - bg.get_width() // 2
+        screen.blit(bg,   (bx, 6))
+        screen.blit(surf, (bx + 2, 8))
 
     # ── Motor RPM bar (right edge) ────────────────────────────────────────────
     bar_h   = 220
@@ -377,55 +417,6 @@ def _draw_hud(screen, font_m, font_s, state, imu, omega_motor, pwm_pct, mode, fa
         screen.blit(txt_surf, (bx + 10, 23))
 
 
-# ── Start overlay ────────────────────────────────────────────────────────────
-
-def _draw_start_overlay(screen, font_l, font_m, phase):
-    """Full-screen overlay shown during READY and SWING-UP phases."""
-    import pygame
-
-    if phase == PHASE_RACE:
-        return
-
-    # Semi-transparent dark panel centred on screen
-    panel_w, panel_h = 520, 220
-    px = SCREEN_W // 2 - panel_w // 2
-    py = SCREEN_H // 2 - panel_h // 2
-
-    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-    panel.fill((10, 12, 18, 200))
-    screen.blit(panel, (px, py))
-    pygame.draw.rect(screen, (80, 90, 110), (px, py, panel_w, panel_h), 2, border_radius=10)
-
-    if phase == PHASE_READY:
-        title = font_l.render("INVERTED PENDULUM RACE CAR", True, (200, 210, 230))
-        hint1 = font_m.render("Pendulum is horizontal (resting position)", True, (150, 155, 170))
-        hint2 = font_m.render("Press  SPACE  to start the race", True, (100, 210, 130))
-        hint3 = font_m.render("Reaction motor will swing pendulum upright", True, (150, 155, 170))
-
-        screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, py + 22))
-        screen.blit(hint1, (SCREEN_W // 2 - hint1.get_width() // 2, py + 76))
-        screen.blit(hint2, (SCREEN_W // 2 - hint2.get_width() // 2, py + 110))
-        screen.blit(hint3, (SCREEN_W // 2 - hint3.get_width() // 2, py + 144))
-
-        # Pulsing SPACE button
-        ticks = pygame.time.get_ticks()
-        alpha = int(155 + 100 * np.sin(ticks / 400.0))
-        btn   = pygame.Surface((180, 38), pygame.SRCALPHA)
-        btn.fill((40, 170, 80, alpha))
-        screen.blit(btn, (SCREEN_W // 2 - 90, py + 162))
-        lbl = font_m.render("[ SPACE ]", True, (255, 255, 255))
-        screen.blit(lbl, (SCREEN_W // 2 - lbl.get_width() // 2, py + 168))
-
-    elif phase == PHASE_SWINGUP:
-        title = font_l.render("SWING-UP IN PROGRESS", True, (230, 190, 60))
-        hint1 = font_m.render("Reaction motor lifting pendulum to upright...", True, (150, 155, 170))
-        hint2 = font_m.render("Cart locked — driving enabled once upright", True, (150, 155, 170))
-
-        screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, py + 40))
-        screen.blit(hint1, (SCREEN_W // 2 - hint1.get_width() // 2, py + 100))
-        screen.blit(hint2, (SCREEN_W // 2 - hint2.get_width() // 2, py + 134))
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -437,7 +428,6 @@ def main():
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
     pygame.display.set_caption("Inverted Pendulum Race Car — Simulation")
     clock  = pygame.time.Clock()
-    font_l = pygame.font.SysFont("Consolas", 24, bold=True)
     font_m = pygame.font.SysFont("Consolas", 20)
     font_s = pygame.font.SysFont("Consolas", 17)
 
@@ -547,7 +537,6 @@ def main():
         _draw_motor(screen, pivot, omega_motor, motor_angle_accum)
         _draw_hud(screen, font_m, font_s, state, imu,
                   omega_motor, pwm_pct, mode, fallen, phase)
-        _draw_start_overlay(screen, font_l, font_m, phase)
 
         pygame.display.flip()
         clock.tick(RENDER_FPS)

@@ -102,6 +102,7 @@ class TestRK4:
         """With damping zeroed, mechanical energy should drift < 1 % over 1 s."""
         monkeypatch.setattr(sim, "CART_FRIC", 0.0)
         monkeypatch.setattr(sim, "PEND_FRIC", 0.0)
+        monkeypatch.setattr(sim, "PEND_AIR",  0.0)
 
         state = np.array([0.0, 0.0, 0.2, 0.0])
 
