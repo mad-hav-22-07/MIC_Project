@@ -46,3 +46,6 @@ esp32_firmware/.vscode/
 *.npy
 *.npz
 sysid/data/
+
+
+.claude
