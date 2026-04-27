@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -m pytest simulation/tests/ -v)",
       "Bash(python -m pytest simulation/tests/ -v --tb=short)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Read(//c/Users/madha/**)"
     ]
   }
 }
